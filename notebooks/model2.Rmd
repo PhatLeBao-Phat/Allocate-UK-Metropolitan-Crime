@@ -1,0 +1,71 @@
+---
+title: "model2"
+output: html_document
+date: "2023-06-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Import 
+library(readxl)
+library(dynlm)
+library(lmtest)
+library(forecast)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+```
+
+```{r}
+# Read in the data 
+rm(list = ls())
+setwd('C:/Users/PC/Documents/Tue course/Data Challange 2/JBG050-Data-Challenge-2-Group15')
+df = read.csv('data/filter/df_all.csv')
+df = data.frame(df)[, -1]
+date = df[, 1]
+
+# Get total 
+total <- list()
+for(row in 1:nrow(df)) {
+  total <- append(total, sum(df[row, -1]))  
+}
+df$total <- total
+
+# Format time-series 
+df_total = ts(df[, 2], start = c(2010, 12), frequency=12)
+```
+
+## 2. ARIMA model on all wards 
+
+```{r}
+final <- matrix(ncol=3)
+colnames(final) <- c("Wards", "p-value", "MSE")
+for(i in 2:(ncol(df) - 1)){
+  # Def df_total
+  df_total = ts(df[, i], start = c(2010, 12), frequency=12)
+  # Training set 
+  df_train <- window(df_total, end=c(2022, 1))
+  # Test set 
+  df_test <- window(df_total, start=c(2022, 2))
+  # Fit 
+  fit <- auto.arima(df_train, seasonal=TRUE)
+  # Get Ljung-Box test p-value
+  p.value <- checkresiduals(fit)$p.value
+  # MSEs
+  predicted <- forecast(fit, h=13)$mean
+  MSE <- mean((predicted - df_test)^2)
+  # Add to the final matrix 
+  final <- rbind(final, c(colnames(df)[i], p.value, MSE))
+}
+```
+
+```{r}
+df_final <- as.data.frame(final[-1, ])
+df_final['p-value'] <- sapply(as.numeric(df_final$`p-value`), function(x) round(x, 3))
+df_final['MSE'] <- sapply(as.numeric(df_final$MSE), function(x) round(x, 3))
+df_final <- df_final[order(df_final$`p-value`),]
+df_final
+```

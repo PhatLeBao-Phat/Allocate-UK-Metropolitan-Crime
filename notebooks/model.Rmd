@@ -1,0 +1,210 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+# Import 
+library(readxl)
+library(dynlm)
+library(lmtest)
+library(forecast)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+```
+
+```{r}
+# Read in the data 
+rm(list = ls())
+setwd('C:/Users/PC/Documents/Tue course/Data Challange 2/JBG050-Data-Challenge-2-Group15')
+df = read.csv('data/filter/df_all.csv')
+df = data.frame(df)[, -1]
+date = df[, 1]
+
+# Get total 
+total <- list()
+for(row in 1:nrow(df)) {
+  total <- append(total, sum(df[row, -1]))  
+}
+df$total <- total
+
+# Format time-series 
+df_total = ts(df['total'], start = c(2010, 12), frequency=12)
+```
+
+### 1. Seasonal plot
+
+```{r}
+ggseasonplot(df_total, year.labels=TRUE, year.labels.left=TRUE) +
+  ylab("Crime") +
+  ggtitle("Seasonal plot")
+```
+
+```{r}
+df_total %>% decompose(type="additive") %>%
+  autoplot() + xlab("Year") 
+```
+
+X11 decomposition
+
+```{r}
+library(seasonal)
+df_total %>% seas(x11="") -> fit
+autoplot(fit) +
+  ggtitle("X11 decomposition of total burglary count")
+
+```
+
+In general, the trend is going down. There are many irregular change between the time of 2019-2021.5 (Covid I believe).
+
+```{r}
+par(mfrow=c(2,1))
+acfpl <- acf(df_total, plot=TRUE)
+pacfpl <- pacf(df_total, plot=TRUE)
+```
+
+According to the ACF, the trend-cycle is also 1 year.
+
+### 2. ARIMA model
+
+#### 2.1 Choosing parameters
+
+Let first separate some data for comparison.
+
+```{r}
+df <- window(df_total, end=c(2022, 1))
+```
+
+```{r}
+# seasonal difference 
+df %>% diff(lag=12) %>% diff() %>% ggtsdisplay()
+```
+
+This is the ACF of the first difference. We observe that lag 1, lag 6, and lag 12 is significant. The lag after lag 1 is mostly insignificant. This suggest AR(1). lag 13 is significant thus suggest order (1) for seasonal part of AR model.
+
+Hyndman-Khandakar algorithm for automatic ARIMA modelling
+
+```{r}
+# Using auto-arima(seasonal=TRUE)
+fit <- auto.arima(df, seasonal=TRUE)
+fit
+```
+
+#### 2.2 Check residuals
+
+```{r}
+fit %>% residuals() %>% ggtsdisplay()
+```
+
+```{r}
+checkresiduals(fit)
+```
+
+Yep. Residuals is actually white-noise.
+
+#### 2.3 Forecasting
+
+```{r}
+fit %>% forecast(h=13) %>% autoplot() +
+  autolayer(window(df_total, start=c(2022, 2)), series='Data')
+```
+
+```{r}
+# Log transformation 
+log_df_total <- log(df_total)
+log_df <- window(log_df_total, end=c(2022, 1))
+log_fit <- auto.arima(log_df, seasonal=TRUE)
+log_fit %>% forecast(h=13) %>% autoplot() +
+  autolayer(window(log_df_total, start=c(2022, 2)), series='Data')
+```
+
+#### 2.4 Add external regressors
+
+For `auto.arima()` to work with external regressors, collect your regressors into a matrix `X`, which you feed into the `xreg` parameter of `auto.arima()`. (Of course, `X` must have the same number of rows as the time series `y` you are modeling.)
+
+For forecasting, you will need the *future* values of your regressors, which you then again feed into the `xreg` parameter of `forecast`.
+
+```{r}
+# Before and after covid 
+gen_covid <- function(df){
+  covid <- (time(df) < 2018.9) | (time(df) > 2021.3)
+  in_covid <- ifelse(covid == TRUE, 1, 0)
+  
+  return(in_covid)
+}
+# Fit 
+fit <- auto.arima(df, seasonal=TRUE, xreg=gen_covid(df))
+real <- window(df_total, start=c(2022, 2))
+fit %>% forecast(h=13, xreg=gen_covid(real)) %>% autoplot() +
+  autolayer(real, series='Data')
+```
+
+```{r}
+summary(fit)
+```
+
+```{r}
+# Weather 
+setwd('C:/Users/PC/Documents/Tue course/Data Challange 2/JBG050-Data-Challenge-2-Group15')
+weather <- read.csv('weatherdata/weather_daily.csv')
+weather <- weather %>%
+  rename(
+     'mean_temp' = 'temperature_2m_mean...C.',
+    'rain_total' = 'rain_sum..mm.',
+  )
+```
+
+```{r}
+colnames(weather)
+```
+
+```{r}
+weather <- weather %>% select('time', 'mean_temp', 'rain_total')
+```
+
+```{r}
+ts_weather <- ts(weather[-1], start=c(2010, 1), frequency=12)
+train_weather <- ts_weather %>% window(start=c(2010, 12), end=c(2021, 1))
+test_weather <- ts_weather %>% window(start=c(2021, 2), end=c(2022, 2))
+```
+
+```{r}
+# Fit 
+df <- window(df_total, end=c(2021, 1))
+fit <- auto.arima(df, seasonal=TRUE, xreg=train_weather)
+real <- window(df_total, start=c(2021, 2))
+fit %>% forecast(h=13, xreg=test_weather) %>% autoplot() +
+  autolayer(real, series='Data')
+```
+
+```{r}
+summary(fit)
+```
+
+```{r}
+checkresiduals(fit)
+```
+
+Combine weather and covid data
+
+```{r}
+# Combine weather data and covid 
+train <- cbind(covid=gen_covid(df), mean_temp=train_weather[,1], rain_total=train_weather[, 2])
+real <- window(df_total, start=c(2021, 2), end=c(2022, 2))
+test <- cbind(covid=gen_covid(real), mean_temp=test_weather[,1], rain_total=test_weather[, 2])
+# Fit
+fit <- auto.arima(df, seasonal=TRUE, xreg=train)
+fit %>% forecast(h=13, xreg=test) %>% autoplot() +
+  autolayer(real, series='Data')
+
+```
+
+```{r}
+summary(fit)
+```
+
+```{r}
+# Check residuals
+checkresiduals(fit)
+```

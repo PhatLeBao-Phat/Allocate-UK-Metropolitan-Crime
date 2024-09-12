@@ -1,0 +1,7 @@
+*
+!.gitignore
+!CCTV/
+!property.csv
+!total_crime_predicted.csv
+!lsoa-data-old-boundaries-DataSheet.csv
+!LSOAs/
